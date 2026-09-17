@@ -1,0 +1,6 @@
+{
+  "name": "Salons Abidjan",
+  "description": "Plateforme de réservation multi-salons de coiffure à Abidjan (Yopougon, Treichville, Angré) avec sélection date/heure, inscription obligatoire et paiement à la caisse.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
