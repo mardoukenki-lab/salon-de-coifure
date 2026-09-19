@@ -104,7 +104,7 @@ fun SalonTopBar(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.weight(1f)
             ) {
-                if (currentTab == AppTab.RESERVER && currentStep > 0) {
+                if ((currentTab == AppTab.RESERVER && currentStep > 0) || currentTab == AppTab.PROFIL) {
                     IconButton(
                         onClick = onBackClick,
                         modifier = Modifier
@@ -243,12 +243,6 @@ fun SalonTopBar(
                     }
                 }
             }
-        }
-
-        // Stepper breadcrumb when in booking flow
-        if (currentTab == AppTab.RESERVER) {
-            Spacer(modifier = Modifier.height(10.dp))
-            BookingStepper(currentStep = currentStep)
         }
     }
 }
@@ -415,6 +409,26 @@ fun SalonBottomNav(
                 )
             },
             label = { Text("Nos Salons") },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = SalonTerracotta,
+                selectedTextColor = SalonTerracotta,
+                indicatorColor = SalonTerracottaSoft.copy(alpha = 0.4f),
+                unselectedIconColor = SalonInkSoft,
+                unselectedTextColor = SalonInkSoft
+            )
+        )
+
+        NavigationBarItem(
+            selected = currentTab == AppTab.PROFIL,
+            onClick = { onTabSelected(AppTab.PROFIL) },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Person,
+                    contentDescription = "Mon Profil",
+                    modifier = Modifier.testTag("nav_profil")
+                )
+            },
+            label = { Text("Mon Profil") },
             colors = NavigationBarItemDefaults.colors(
                 selectedIconColor = SalonTerracotta,
                 selectedTextColor = SalonTerracotta,

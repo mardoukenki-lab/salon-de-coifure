@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -14,25 +15,28 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Tab
@@ -51,6 +55,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -59,6 +64,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.model.Salon
 import com.example.ui.theme.SalonCream
 import com.example.ui.theme.SalonDangerBg
 import com.example.ui.theme.SalonDangerFg
@@ -66,18 +72,29 @@ import com.example.ui.theme.SalonInk
 import com.example.ui.theme.SalonInkSoft
 import com.example.ui.theme.SalonLine
 import com.example.ui.theme.SalonNavy
+import com.example.ui.theme.SalonOkFg
 import com.example.ui.theme.SalonPaper
 import com.example.ui.theme.SalonTerracotta
 import com.example.ui.theme.SalonTerracottaSoft
 
 /**
- * Dialogue d'inscription / connexion obligatoire avant de confirmer une réservation
+ * Dialogue d'inscription / connexion obligatoire avant de pouvoir réserver.
+ * Supporte :
+ * 1. Création de compte avec Email, Mot de passe, Nom complet, Téléphone et Salon favori.
+ * 2. Connexion avec Email et Mot de passe existants.
+ * 3. Connexion instantanée avec Google (Credential Manager / Firebase Auth).
  */
 @Composable
 fun AuthModalDialog(
+    salons: List<Salon> = emptyList(),
+    isLoading: Boolean = false,
+    errorMessage: String? = null,
     onDismiss: () -> Unit,
-    onAuthSuccess: (nom: String, telephone: String, email: String) -> Unit
+    onRegisterWithEmail: (nom: String, telephone: String, email: String, motDePasse: String, salonPrefereId: String) -> Unit,
+    onLoginWithEmail: (email: String, motDePasse: String) -> Unit,
+    onGoogleSignIn: (context: Context) -> Unit
 ) {
+    val context = LocalContext.current
     var selectedTabIndex by remember { mutableIntStateOf(0) } // 0 = Inscription, 1 = Connexion
 
     // Form fields
@@ -86,11 +103,19 @@ fun AuthModalDialog(
     var email by remember { mutableStateOf("") }
     var motDePasse by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-    var isLoading by remember { mutableStateOf(false) }
+    var selectedSalonId by remember {
+        mutableStateOf(salons.firstOrNull()?.id ?: "angre")
+    }
+
+    var localValidationError by remember { mutableStateOf<String?>(null) }
+    val displayError = errorMessage ?: localValidationError
+
+    val scrollState = rememberScrollState()
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            if (!isLoading) onDismiss()
+        },
         shape = RoundedCornerShape(20.dp),
         containerColor = SalonPaper,
         tonalElevation = 8.dp,
@@ -101,22 +126,26 @@ fun AuthModalDialog(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = if (selectedTabIndex == 0) "Inscription visiteur" else "Connexion",
+                        text = if (selectedTabIndex == 0) "Inscription client(e)" else "Connexion client(e)",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         color = SalonNavy,
                         fontFamily = FontFamily.Serif
                     )
                     Text(
-                        text = "Obligatoire pour finaliser votre réservation",
+                        text = "Obligatoire avant de réserver votre créneau",
                         fontSize = 12.sp,
                         color = SalonTerracotta,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
-                IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                IconButton(
+                    onClick = onDismiss,
+                    enabled = !isLoading,
+                    modifier = Modifier.size(32.dp)
+                ) {
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Fermer",
@@ -129,6 +158,7 @@ fun AuthModalDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .verticalScroll(scrollState)
                     .padding(top = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -145,13 +175,13 @@ fun AuthModalDialog(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(10.dp))
                 ) {
                     Tab(
                         selected = selectedTabIndex == 0,
                         onClick = {
                             selectedTabIndex = 0
-                            errorMessage = null
+                            localValidationError = null
                         },
                         text = {
                             Text(
@@ -165,11 +195,11 @@ fun AuthModalDialog(
                         selected = selectedTabIndex == 1,
                         onClick = {
                             selectedTabIndex = 1
-                            errorMessage = null
+                            localValidationError = null
                         },
                         text = {
                             Text(
-                                text = "J'ai déjà un compte",
+                                text = "Se connecter",
                                 fontWeight = if (selectedTabIndex == 1) FontWeight.Bold else FontWeight.Medium,
                                 fontSize = 12.sp
                             )
@@ -178,16 +208,16 @@ fun AuthModalDialog(
                 }
 
                 // Error banner
-                AnimatedVisibility(visible = errorMessage != null) {
+                AnimatedVisibility(visible = displayError != null) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(8.dp))
                             .background(SalonDangerBg)
-                            .padding(8.dp)
+                            .padding(10.dp)
                     ) {
                         Text(
-                            text = errorMessage ?: "",
+                            text = displayError ?: "",
                             color = SalonDangerFg,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Medium
@@ -195,12 +225,77 @@ fun AuthModalDialog(
                     }
                 }
 
+                // Google Sign-In button (fast registration / login)
+                OutlinedButton(
+                    onClick = {
+                        localValidationError = null
+                        onGoogleSignIn(context)
+                    },
+                    enabled = !isLoading,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = SalonCream,
+                        contentColor = SalonNavy
+                    ),
+                    border = ButtonDefaults.outlinedButtonBorder.copy(brush = androidx.compose.ui.graphics.SolidColor(SalonLine)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .testTag("btn_google_signin")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        // Google "G" Badge
+                        Box(
+                            modifier = Modifier
+                                .size(22.dp)
+                                .clip(CircleShape)
+                                .background(SalonPaper)
+                                .border(1.dp, SalonLine, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "G",
+                                fontWeight = FontWeight.Black,
+                                fontSize = 13.sp,
+                                color = SalonTerracotta
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = if (selectedTabIndex == 0) "S'inscrire avec Google" else "Continuer avec Google",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = SalonNavy
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    HorizontalDivider(modifier = Modifier.weight(1f), color = SalonLine)
+                    Text(
+                        text = "  OU PAR EMAIL  ",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = SalonInkSoft
+                    )
+                    HorizontalDivider(modifier = Modifier.weight(1f), color = SalonLine)
+                }
+
                 // Inscription fields
                 if (selectedTabIndex == 0) {
                     OutlinedTextField(
                         value = nom,
-                        onValueChange = { nom = it },
-                        label = { Text("Nom complet *") },
+                        onValueChange = {
+                            nom = it
+                            localValidationError = null
+                        },
+                        label = { Text("Nom et prénom *") },
                         placeholder = { Text("ex: Aminata Koné") },
                         leadingIcon = {
                             Icon(Icons.Default.Person, contentDescription = null, tint = SalonTerracotta)
@@ -217,7 +312,10 @@ fun AuthModalDialog(
 
                     OutlinedTextField(
                         value = telephone,
-                        onValueChange = { telephone = it },
+                        onValueChange = {
+                            telephone = it
+                            localValidationError = null
+                        },
                         label = { Text("Numéro de téléphone *") },
                         placeholder = { Text("ex: 07 08 45 67 89") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
@@ -233,11 +331,52 @@ fun AuthModalDialog(
                             .fillMaxWidth()
                             .testTag("input_auth_tel")
                     )
+
+                    // Salon favori selector chips
+                    if (salons.isNotEmpty()) {
+                        Column {
+                            Text(
+                                text = "Votre salon habituel :",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = SalonNavy
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                salons.forEach { salon ->
+                                    val isSelected = salon.id == selectedSalonId
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isSelected) SalonTerracotta else SalonCream)
+                                            .border(1.dp, if (isSelected) SalonTerracotta else SalonLine, RoundedCornerShape(8.dp))
+                                            .clickable { selectedSalonId = salon.id }
+                                            .padding(vertical = 6.dp, horizontal = 4.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = salon.quartier,
+                                            fontSize = 10.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (isSelected) SalonPaper else SalonNavy
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 OutlinedTextField(
                     value = email,
-                    onValueChange = { email = it },
+                    onValueChange = {
+                        email = it
+                        localValidationError = null
+                    },
                     label = { Text("Adresse Email *") },
                     placeholder = { Text("ex: client@abidjan.ci") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
@@ -256,7 +395,10 @@ fun AuthModalDialog(
 
                 OutlinedTextField(
                     value = motDePasse,
-                    onValueChange = { motDePasse = it },
+                    onValueChange = {
+                        motDePasse = it
+                        localValidationError = null
+                    },
                     label = { Text("Mot de passe *") },
                     visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     leadingIcon = {
@@ -284,9 +426,9 @@ fun AuthModalDialog(
 
                 Text(
                     text = if (selectedTabIndex == 0) {
-                        "Vos informations permettent de recevoir vos rappels de RDV par SMS et de retrouver vos réservations."
+                        "En vous inscrivant, vous pourrez sécuriser vos réservations dans nos 3 salons et consulter vos rendez-vous."
                     } else {
-                        "Connectez-vous pour continuer votre prise de rendez-vous en toute sécurité."
+                        "Connectez-vous pour retrouver vos coordonnées et finaliser votre réservation."
                     },
                     fontSize = 11.sp,
                     color = SalonInkSoft,
@@ -298,40 +440,38 @@ fun AuthModalDialog(
             Button(
                 onClick = {
                     if (selectedTabIndex == 0) {
-                        // Inscription validation
+                        // Validation Inscription
                         if (nom.isBlank()) {
-                            errorMessage = "Veuillez renseigner votre nom complet."
+                            localValidationError = "Veuillez renseigner votre nom complet."
                             return@Button
                         }
-                        if (telephone.isBlank()) {
-                            errorMessage = "Veuillez renseigner un numéro de téléphone valide."
+                        if (telephone.trim().length < 8) {
+                            localValidationError = "Veuillez renseigner un numéro de téléphone valide (au moins 8 chiffres)."
                             return@Button
                         }
                         if (email.isBlank() || !email.contains("@")) {
-                            errorMessage = "Veuillez renseigner une adresse email valide."
+                            localValidationError = "Veuillez renseigner une adresse email valide."
                             return@Button
                         }
-                        if (motDePasse.length < 4) {
-                            errorMessage = "Le mot de passe doit comporter au moins 4 caractères."
+                        if (motDePasse.length < 6) {
+                            localValidationError = "Le mot de passe doit comporter au moins 6 caractères."
                             return@Button
                         }
-                        onAuthSuccess(nom.trim(), telephone.trim(), email.trim())
+                        onRegisterWithEmail(nom.trim(), telephone.trim(), email.trim(), motDePasse, selectedSalonId)
                     } else {
-                        // Connexion validation
-                        if (email.isBlank()) {
-                            errorMessage = "Veuillez entrer votre email."
+                        // Validation Connexion
+                        if (email.isBlank() || !email.contains("@")) {
+                            localValidationError = "Veuillez entrer une adresse email valide."
                             return@Button
                         }
                         if (motDePasse.isBlank()) {
-                            errorMessage = "Veuillez entrer votre mot de passe."
+                            localValidationError = "Veuillez entrer votre mot de passe."
                             return@Button
                         }
-                        val userNom = if (email.contains("@")) {
-                            email.substringBefore("@").replaceFirstChar { it.uppercase() }
-                        } else "Client Salons"
-                        onAuthSuccess(userNom, telephone.ifBlank { "07 08 45 67 89" }, email.trim())
+                        onLoginWithEmail(email.trim(), motDePasse)
                     }
                 },
+                enabled = !isLoading,
                 shape = RoundedCornerShape(10.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = SalonTerracotta),
                 modifier = Modifier
@@ -346,7 +486,7 @@ fun AuthModalDialog(
                     )
                 } else {
                     Text(
-                        text = if (selectedTabIndex == 0) "S'inscrire et continuer" else "Se connecter et continuer",
+                        text = if (selectedTabIndex == 0) "Créer mon compte client" else "Se connecter et continuer",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -354,7 +494,10 @@ fun AuthModalDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isLoading
+            ) {
                 Text("Annuler", color = SalonInkSoft, fontSize = 13.sp)
             }
         }

@@ -12,10 +12,14 @@ import com.example.data.model.HairstyleItem
 import com.example.data.model.MobileMoneyOperator
 import com.example.data.model.ReservationEntity
 import com.example.data.model.Salon
+import com.example.data.auth.FirebaseAuthRepository
 import com.example.data.model.ServiceOption
+import com.example.data.model.UserProfile
 import com.example.data.repository.AdminManager
 import com.example.data.repository.CrossSiteAlternative
 import com.example.data.repository.SalonRepository
+import com.example.data.repository.UserManager
+import android.content.Context
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,12 +32,19 @@ import kotlinx.coroutines.launch
 enum class AppTab {
     RESERVER,
     MES_RDV,
-    SALONS_INFO
+    SALONS_INFO,
+    PROFIL
+}
+
+enum class ReservationMode {
+    UNIFIED,   // Écran de réservation tout-en-un avec calendrier et créneaux
+    SHOWCASE   // Découverte du catalogue et des salons
 }
 
 data class BookingUiState(
     val currentStep: Int = 0, // 0 to 6
     val currentTab: AppTab = AppTab.RESERVER,
+    val reservationMode: ReservationMode = ReservationMode.UNIFIED,
     val selectedSalon: Salon? = null,
     val selectedService: HairService? = null,
     val selectedOptionIds: Set<String> = emptySet(),
@@ -45,7 +56,12 @@ data class BookingUiState(
     val clientTelephone: String = "",
     val clientEmail: String = "",
     val isUserRegistered: Boolean = false,
+    val userProfile: UserProfile = UserProfile(),
+    val profileSuccessMessage: String? = null,
+    val profileErrorMessage: String? = null,
     val showAuthModal: Boolean = false,
+    val isAuthLoading: Boolean = false,
+    val authErrorMessage: String? = null,
     val selectedCustomDateDisplay: String? = null,
     val selectedCustomDateKey: String? = null,
     val selectedTimeFilter: String? = null,
@@ -85,6 +101,8 @@ data class BookingUiState(
 
 class BookingViewModel(application: Application) : AndroidViewModel(application) {
     private val adminManager: AdminManager = AdminManager(application)
+    private val userManager: UserManager = UserManager(application)
+    private val firebaseAuthRepo: FirebaseAuthRepository = FirebaseAuthRepository(application)
     private val repository: SalonRepository
 
     val salons: List<Salon>
@@ -115,14 +133,39 @@ class BookingViewModel(application: Application) : AndroidViewModel(application)
         val superAdmin = adminManager.getSuperAdmin()
         val secondaryAdmins = adminManager.getSecondaryAdmins()
         val hairstyles = repository.getHairstyles()
+        val userProfile = userManager.getUserProfile()
+        val currentFirebaseUser = firebaseAuthRepo.currentFirebaseUser
+        val resolvedProfile = if (currentFirebaseUser != null && !userProfile.isRegistered) {
+            val restoredName = currentFirebaseUser.displayName ?: currentFirebaseUser.email?.substringBefore("@") ?: "Client"
+            val restoredEmail = currentFirebaseUser.email ?: ""
+            userManager.registerUserProfile(
+                nom = restoredName,
+                telephone = userProfile.telephone.ifBlank { "" },
+                email = restoredEmail,
+                salonPrefereId = userProfile.salonPrefereId,
+                firebaseUid = currentFirebaseUser.uid,
+                authProvider = if (currentFirebaseUser.providerData.any { it.providerId.contains("google") }) "firebase_google" else "firebase_email"
+            )
+        } else {
+            userProfile
+        }
 
-        // Preselect the first salon as default entry point
+        // Preselect the first salon, first service, and today's date as default entry point
+        val firstDay = availableDays.firstOrNull()
         _uiState.value = _uiState.value.copy(
             selectedSalon = salons.firstOrNull(),
+            selectedService = services.firstOrNull(),
+            selectedCustomDateDisplay = firstDay?.first,
+            selectedCustomDateKey = firstDay?.second,
             isSuperAdminConfigured = isSuperConfigured,
             superAdminUser = superAdmin,
             secondaryAdmins = secondaryAdmins,
-            hairstylesList = hairstyles
+            hairstylesList = hairstyles,
+            userProfile = resolvedProfile,
+            clientNom = resolvedProfile.nom,
+            clientTelephone = resolvedProfile.telephone,
+            clientEmail = resolvedProfile.email,
+            isUserRegistered = resolvedProfile.isRegistered
         )
 
         userReservations = repository.getAllReservations().stateIn(
@@ -142,6 +185,10 @@ class BookingViewModel(application: Application) : AndroidViewModel(application)
         _uiState.value = _uiState.value.copy(currentTab = tab)
     }
 
+    fun setReservationMode(mode: ReservationMode) {
+        _uiState.value = _uiState.value.copy(reservationMode = mode)
+    }
+
     fun selectSalon(salon: Salon) {
         _uiState.value = _uiState.value.copy(
             selectedSalon = salon,
@@ -151,11 +198,38 @@ class BookingViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
+    fun selectSalonOnly(salon: Salon) {
+        _uiState.value = _uiState.value.copy(
+            selectedSalon = salon,
+            selectedCreneau = null,
+            crossSiteSuggestion = null
+        )
+    }
+
     fun selectService(service: HairService) {
         _uiState.value = _uiState.value.copy(
             selectedService = service,
             currentStep = 2 // Move to Options
         )
+    }
+
+    fun selectServiceOnly(service: HairService) {
+        _uiState.value = _uiState.value.copy(
+            selectedService = service
+        )
+    }
+
+    fun proceedFromReservationScreen() {
+        if (_uiState.value.selectedSalon != null &&
+            _uiState.value.selectedService != null &&
+            _uiState.value.selectedCreneau != null
+        ) {
+            if (!_uiState.value.isUserRegistered) {
+                _uiState.value = _uiState.value.copy(showAuthModal = true)
+            } else {
+                goToStep(5) // Direct to Payment & Confirmation
+            }
+        }
     }
 
     fun toggleOption(optionId: String) {
@@ -219,29 +293,284 @@ class BookingViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun openAuthModal() {
-        _uiState.value = _uiState.value.copy(showAuthModal = true)
+        _uiState.value = _uiState.value.copy(showAuthModal = true, authErrorMessage = null)
     }
 
     fun dismissAuthModal() {
-        _uiState.value = _uiState.value.copy(showAuthModal = false)
+        _uiState.value = _uiState.value.copy(showAuthModal = false, authErrorMessage = null, isAuthLoading = false)
+    }
+
+    fun registerClient(
+        nom: String,
+        telephone: String,
+        email: String,
+        motDePasse: String,
+        salonPrefereId: String
+    ) {
+        val trimmedNom = nom.trim()
+        val trimmedTel = telephone.trim()
+        val trimmedEmail = email.trim()
+
+        if (trimmedNom.isBlank()) {
+            _uiState.value = _uiState.value.copy(authErrorMessage = "Veuillez renseigner votre nom complet.")
+            return
+        }
+        if (trimmedTel.length < 8) {
+            _uiState.value = _uiState.value.copy(authErrorMessage = "Numéro de téléphone invalide (au moins 8 chiffres).")
+            return
+        }
+        if (!trimmedEmail.contains("@") || !trimmedEmail.contains(".")) {
+            _uiState.value = _uiState.value.copy(authErrorMessage = "Veuillez renseigner une adresse email valide.")
+            return
+        }
+        if (motDePasse.length < 6) {
+            _uiState.value = _uiState.value.copy(authErrorMessage = "Le mot de passe doit comporter au moins 6 caractères.")
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isAuthLoading = true, authErrorMessage = null)
+            val result = firebaseAuthRepo.registerWithEmailAndPassword(
+                nom = trimmedNom,
+                email = trimmedEmail,
+                password = motDePasse,
+                telephone = trimmedTel,
+                salonPrefereId = salonPrefereId
+            )
+            result.onSuccess { profile ->
+                val saved = userManager.registerUserProfile(
+                    nom = profile.nom,
+                    telephone = profile.telephone,
+                    email = profile.email,
+                    salonPrefereId = profile.salonPrefereId,
+                    firebaseUid = profile.firebaseUid,
+                    authProvider = profile.authProvider,
+                    dateInscription = profile.dateInscription
+                )
+                _uiState.value = _uiState.value.copy(
+                    isAuthLoading = false,
+                    showAuthModal = false,
+                    isUserRegistered = true,
+                    userProfile = saved,
+                    clientNom = saved.nom,
+                    clientTelephone = saved.telephone,
+                    clientEmail = saved.email,
+                    profileSuccessMessage = "Compte créé et synchronisé avec succès !"
+                )
+                if (_uiState.value.selectedCreneau != null && _uiState.value.currentStep == 0) {
+                    goToStep(5)
+                }
+            }.onFailure { err ->
+                // Fallback to local registration if Firebase is unreachable or unlinked
+                val localProfile = userManager.registerUserProfile(
+                    nom = trimmedNom,
+                    telephone = trimmedTel,
+                    email = trimmedEmail,
+                    salonPrefereId = salonPrefereId,
+                    firebaseUid = "local_${System.currentTimeMillis()}",
+                    authProvider = "local"
+                )
+                _uiState.value = _uiState.value.copy(
+                    isAuthLoading = false,
+                    showAuthModal = false,
+                    isUserRegistered = true,
+                    userProfile = localProfile,
+                    clientNom = localProfile.nom,
+                    clientTelephone = localProfile.telephone,
+                    clientEmail = localProfile.email,
+                    profileSuccessMessage = "Compte client enregistré !"
+                )
+                if (_uiState.value.selectedCreneau != null && _uiState.value.currentStep == 0) {
+                    goToStep(5)
+                }
+            }
+        }
+    }
+
+    fun loginClient(email: String, motDePasse: String) {
+        val trimmedEmail = email.trim()
+        if (trimmedEmail.isBlank() || !trimmedEmail.contains("@")) {
+            _uiState.value = _uiState.value.copy(authErrorMessage = "Veuillez renseigner une adresse email valide.")
+            return
+        }
+        if (motDePasse.isBlank()) {
+            _uiState.value = _uiState.value.copy(authErrorMessage = "Veuillez saisir votre mot de passe.")
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isAuthLoading = true, authErrorMessage = null)
+            val result = firebaseAuthRepo.signInWithEmailAndPassword(trimmedEmail, motDePasse)
+            result.onSuccess { profile ->
+                val saved = userManager.registerUserProfile(
+                    nom = profile.nom,
+                    telephone = profile.telephone,
+                    email = profile.email,
+                    salonPrefereId = profile.salonPrefereId,
+                    firebaseUid = profile.firebaseUid,
+                    authProvider = profile.authProvider,
+                    dateInscription = profile.dateInscription
+                )
+                _uiState.value = _uiState.value.copy(
+                    isAuthLoading = false,
+                    showAuthModal = false,
+                    isUserRegistered = true,
+                    userProfile = saved,
+                    clientNom = saved.nom,
+                    clientTelephone = saved.telephone,
+                    clientEmail = saved.email,
+                    profileSuccessMessage = "Connexion réussie !"
+                )
+                if (_uiState.value.selectedCreneau != null && _uiState.value.currentStep == 0) {
+                    goToStep(5)
+                }
+            }.onFailure { error ->
+                val localProf = userManager.getUserProfile()
+                if (localProf.isRegistered && localProf.email.equals(trimmedEmail, ignoreCase = true)) {
+                    _uiState.value = _uiState.value.copy(
+                        isAuthLoading = false,
+                        showAuthModal = false,
+                        isUserRegistered = true,
+                        clientNom = localProf.nom,
+                        clientTelephone = localProf.telephone,
+                        clientEmail = localProf.email,
+                        profileSuccessMessage = "Re-connexion locale réussie !"
+                    )
+                    if (_uiState.value.selectedCreneau != null && _uiState.value.currentStep == 0) {
+                        goToStep(5)
+                    }
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        isAuthLoading = false,
+                        authErrorMessage = error.message ?: "Identifiants invalides."
+                    )
+                }
+            }
+        }
+    }
+
+    fun loginWithGoogle(context: Context) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isAuthLoading = true, authErrorMessage = null)
+            val result = firebaseAuthRepo.signInWithGoogle(context)
+            result.onSuccess { profile ->
+                val saved = userManager.registerUserProfile(
+                    nom = profile.nom,
+                    telephone = profile.telephone,
+                    email = profile.email,
+                    salonPrefereId = profile.salonPrefereId,
+                    firebaseUid = profile.firebaseUid,
+                    authProvider = profile.authProvider,
+                    dateInscription = profile.dateInscription
+                )
+                _uiState.value = _uiState.value.copy(
+                    isAuthLoading = false,
+                    showAuthModal = false,
+                    isUserRegistered = true,
+                    userProfile = saved,
+                    clientNom = saved.nom,
+                    clientTelephone = saved.telephone,
+                    clientEmail = saved.email,
+                    profileSuccessMessage = "Connecté(e) avec Google !"
+                )
+                if (_uiState.value.selectedCreneau != null && _uiState.value.currentStep == 0) {
+                    goToStep(5)
+                }
+            }.onFailure { error ->
+                _uiState.value = _uiState.value.copy(
+                    isAuthLoading = false,
+                    authErrorMessage = error.message ?: "Connexion Google annulée."
+                )
+            }
+        }
     }
 
     fun onAuthSuccess(nom: String, telephone: String, email: String) {
-        _uiState.value = _uiState.value.copy(
-            clientNom = nom,
-            clientTelephone = telephone,
-            clientEmail = email,
-            isUserRegistered = true,
-            showAuthModal = false
+        val currentProfile = _uiState.value.userProfile
+        val updated = userManager.registerUserProfile(
+            nom = nom,
+            telephone = telephone,
+            email = email,
+            salonPrefereId = currentProfile.salonPrefereId,
+            firebaseUid = "local_${System.currentTimeMillis()}",
+            authProvider = "local"
         )
+        _uiState.value = _uiState.value.copy(
+            clientNom = updated.nom,
+            clientTelephone = updated.telephone,
+            clientEmail = updated.email,
+            isUserRegistered = true,
+            userProfile = updated,
+            showAuthModal = false,
+            profileSuccessMessage = "Compte client créé avec succès !"
+        )
+        if (_uiState.value.selectedCreneau != null && _uiState.value.currentStep == 0) {
+            goToStep(5)
+        }
     }
 
     fun logoutUser() {
+        firebaseAuthRepo.signOut()
+        val emptyProfile = userManager.resetUserProfile()
         _uiState.value = _uiState.value.copy(
             isUserRegistered = false,
             clientNom = "",
             clientTelephone = "",
-            clientEmail = ""
+            clientEmail = "",
+            userProfile = emptyProfile,
+            profileSuccessMessage = "Vous avez été déconnecté(e)."
+        )
+    }
+
+    fun updateUserProfile(
+        nom: String,
+        telephone: String,
+        email: String,
+        salonPrefereId: String
+    ): Boolean {
+        val trimmedNom = nom.trim()
+        val trimmedTel = telephone.trim()
+        val trimmedEmail = email.trim()
+
+        if (trimmedNom.isBlank()) {
+            _uiState.value = _uiState.value.copy(
+                profileErrorMessage = "Le nom complet est obligatoire.",
+                profileSuccessMessage = null
+            )
+            return false
+        }
+        if (trimmedTel.length < 8) {
+            _uiState.value = _uiState.value.copy(
+                profileErrorMessage = "Veuillez saisir un numéro de téléphone valide (au moins 8 chiffres).",
+                profileSuccessMessage = null
+            )
+            return false
+        }
+        if (!trimmedEmail.contains("@") || !trimmedEmail.contains(".")) {
+            _uiState.value = _uiState.value.copy(
+                profileErrorMessage = "Veuillez saisir une adresse email valide (ex: contact@domaine.ci).",
+                profileSuccessMessage = null
+            )
+            return false
+        }
+
+        val updated = userManager.saveUserProfile(trimmedNom, trimmedTel, trimmedEmail, salonPrefereId)
+        _uiState.value = _uiState.value.copy(
+            userProfile = updated,
+            clientNom = updated.nom,
+            clientTelephone = updated.telephone,
+            clientEmail = updated.email,
+            isUserRegistered = true,
+            profileSuccessMessage = "Coordonnées de votre compte mises à jour avec succès !",
+            profileErrorMessage = null
+        )
+        return true
+    }
+
+    fun clearProfileMessages() {
+        _uiState.value = _uiState.value.copy(
+            profileSuccessMessage = null,
+            profileErrorMessage = null
         )
     }
 
@@ -372,6 +701,9 @@ class BookingViewModel(application: Application) : AndroidViewModel(application)
                 clientTelephone = _uiState.value.clientTelephone.ifBlank { "07 08 45 67 89" },
                 modePaiement = "Paiement à la caisse"
             )
+
+            // Synchronisation cloud Firestore
+            firebaseAuthRepo.syncReservationToFirestore(confirmed)
 
             holdJob?.cancel()
 

@@ -139,10 +139,12 @@ data class HairstyleItem(
  * Profil utilisateur du client du réseau de salons.
  */
 data class UserProfile(
-    val nom: String = "Aminata Koné",
-    val telephone: String = "+225 07 08 45 67 89",
-    val email: String = "aminata.kone@gmail.com",
-    val isRegistered: Boolean = true,
-    val dateInscription: String = "15/09/2026",
-    val salonPrefereId: String = "angre"
+    val nom: String = "",
+    val telephone: String = "",
+    val email: String = "",
+    val isRegistered: Boolean = false,
+    val dateInscription: String = "",
+    val salonPrefereId: String = "angre",
+    val firebaseUid: String? = null,
+    val authProvider: String = "local" // "firebase_email", "firebase_google", "local"
 )

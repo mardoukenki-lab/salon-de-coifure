@@ -295,7 +295,36 @@ class SalonRepository(
 
     fun getCreneaux(salonId: String, dateKey: String): List<Creneau> {
         val key = "${salonId}_$dateKey"
-        return _creneauxState.value[key] ?: emptyList()
+        val existing = _creneauxState.value[key]
+        if (existing != null && existing.isNotEmpty()) return existing
+
+        val baseHours = listOf(
+            "09h00" to "10h30",
+            "10h30" to "12h00",
+            "13h00" to "14h00",
+            "14h00" to "15h00",
+            "15h30" to "16h30",
+            "16h30" to "17h30",
+            "17h30" to "18h30"
+        )
+        val generated = baseHours.mapIndexed { index, (start, end) ->
+            val isUnavailable = (index == 1 && salonId == "angre") ||
+                    (index == 2 && salonId == "yopougon") ||
+                    (index == 4 && salonId == "treichville")
+
+            Creneau(
+                id = "${salonId}_${dateKey}_$index",
+                salonId = salonId,
+                dateStr = dateKey,
+                heureDebut = start,
+                heureFin = end,
+                statut = if (isUnavailable) CreneauStatut.RESERVE else CreneauStatut.LIBRE
+            )
+        }
+        val mutable = _creneauxState.value.toMutableMap()
+        mutable[key] = generated
+        _creneauxState.value = mutable
+        return generated
     }
 
     /**
